@@ -20,6 +20,70 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import yfinance as yf
+
+
+# ─────────────────────────────────────────────
+# Fundamental screen
+# ─────────────────────────────────────────────
+
+def check_fundamentals(ticker: str, min_growth_pct: float = 25.0) -> dict:
+    """
+    Verify quarterly YoY EPS and revenue growth via yfinance.
+
+    Returns:
+        {
+          "pass": bool,
+          "eps_growth": float | None,   # YoY % change, most-recent quarter
+          "rev_growth": float | None,   # YoY % change, most-recent quarter
+          "reason": str,               # human-readable failure reason
+        }
+    """
+    result: dict = {"pass": False, "eps_growth": None, "rev_growth": None, "reason": ""}
+
+    try:
+        stmt = yf.Ticker(ticker).quarterly_income_stmt
+    except Exception as exc:
+        result["reason"] = f"API 錯誤: {exc}"
+        return result
+
+    if stmt is None or stmt.empty or stmt.shape[1] < 5:
+        result["reason"] = "季度財報資料不足（需至少 5 季）"
+        return result
+
+    def _yoy(row_names: list[str]) -> float | None:
+        for name in row_names:
+            if name in stmt.index:
+                row = stmt.loc[name].dropna()
+                if len(row) >= 5:
+                    current  = float(row.iloc[0])
+                    year_ago = float(row.iloc[4])
+                    if year_ago > 0:
+                        return (current - year_ago) / year_ago * 100
+        return None
+
+    rev_growth = _yoy(["Total Revenue", "Revenue"])
+    eps_growth = _yoy(["Basic EPS", "Diluted EPS"])
+
+    result["rev_growth"] = round(rev_growth, 1) if rev_growth is not None else None
+    result["eps_growth"] = round(eps_growth, 1) if eps_growth is not None else None
+
+    rev_ok = rev_growth is not None and rev_growth >= min_growth_pct
+    eps_ok = eps_growth is not None and eps_growth >= min_growth_pct
+
+    reasons = []
+    if not rev_ok:
+        reasons.append(
+            f"營收增長不足 ({rev_growth:.1f}%)" if rev_growth is not None else "缺少營收資料"
+        )
+    if not eps_ok:
+        reasons.append(
+            f"EPS 增長不足 ({eps_growth:.1f}%)" if eps_growth is not None else "缺少 EPS 資料"
+        )
+
+    result["pass"]   = rev_ok and eps_ok
+    result["reason"] = "；".join(reasons)
+    return result
 
 
 # ─────────────────────────────────────────────
