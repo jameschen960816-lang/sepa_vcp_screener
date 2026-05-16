@@ -267,13 +267,28 @@ def render_sidebar() -> dict:
             min_rs   = st.slider("最低 RS 評分", 0, 99, 70)
 
         st.divider()
-        st.subheader("🌀 VCP 型態識別")
+        st.subheader("🌀 VCP 型態識別（日線）")
         use_vcp = st.checkbox("啟用 VCP 篩選", value=True)
         min_contractions = 2
         req_vol = True
+        max_below_pivot_pct = 10.0
         if use_vcp:
             min_contractions = st.slider("最少收縮次數", 2, 4, 2)
             req_vol = st.checkbox("要求成交量逐段遞減", value=True)
+            max_below_pivot_pct = float(st.slider("距樞軸點最大距離 (%)", 1, 20, 10))
+            st.caption("只篩選正在形成 VCP、尚未突破樞軸點的股票")
+
+        st.divider()
+        st.subheader("🎯 突破準備：前一交易日創52週新高")
+        use_near_high = st.checkbox("啟用：前一交易日創52週新高篩選", value=True)
+        if use_near_high:
+            st.caption("篩選前一交易日盤中高點創下近52週新高的股票")
+
+        st.divider()
+        st.subheader("📉 前一交易日創52週新低（市況觀察）")
+        use_near_low = st.checkbox("啟用：前一交易日創52週新低觀察", value=False)
+        if use_near_low:
+            st.caption("獨立觀察清單，不受其他篩選條件影響，供判斷市場整體弱勢狀況")
 
         st.divider()
         st.subheader("📊 基本面篩選")
@@ -314,6 +329,9 @@ def render_sidebar() -> dict:
         use_vcp=use_vcp,
         min_contractions=min_contractions,
         req_vol=req_vol,
+        max_below_pivot_pct=max_below_pivot_pct,
+        use_near_high=use_near_high,
+        use_near_low=use_near_low,
         use_fundamentals=use_fundamentals,
         min_eps_growth=min_eps_growth,
         min_rev_growth=min_rev_growth,
@@ -375,13 +393,13 @@ def main() -> None:
                 """
             )
         with col4:
-            st.subheader("Discord 通知")
+            st.subheader("52週高低點篩選")
             st.markdown(
                 """
-                - 掃描結果中單日漲幅達門檻（預設 5%）
-                - 同時通過 SEPA + VCP + 基本面篩選
-                - 一鍵發送到 Discord #stock 頻道
-                - 每日自動監控：執行 `monitor.py` 腳本
+                - **創52週新高**：前一交易日盤中高點創下52週新高
+                - **創52週新低**：前一交易日盤中低點創下52週新低
+                - 新低清單為獨立觀察區，不受 SEPA / VCP 影響
+                - 適合判斷強勢突破股與市場整體弱勢狀況
                 """
             )
         st.info("設定好篩選條件後，點選左側的「開始掃描」按鈕。")
@@ -449,6 +467,8 @@ def main() -> None:
     st.info("執行 SEPA / VCP 篩選中…")
     prog2 = st.progress(0.0)
     results: list[dict] = []
+    high52_results: list[dict] = []
+    low52_results: list[dict] = []
     total = len(all_data)
 
     for idx, (ticker, df) in enumerate(all_data.items()):
@@ -462,6 +482,7 @@ def main() -> None:
             vcp_result: dict = {}
 
             # ── SEPA ──
+            sepa = None
             if cfg["use_sepa"]:
                 sepa = check_sepa(close)
                 if sepa is None:
@@ -471,6 +492,7 @@ def main() -> None:
                 if sepa["sepa_count"] < cfg["sepa_min"] or rs < cfg["min_rs"]:
                     sepa_ok = False
 
+                from_high_pct = (sepa["high52"] - sepa["price"]) / sepa["high52"] * 100
                 row.update(
                     Price        = round(sepa["price"], 2),
                     SMA50        = round(sepa["sma50"], 2),
@@ -480,12 +502,47 @@ def main() -> None:
                     RS評分       = int(rs),
                     高52週       = round(sepa["high52"], 2),
                     低52週       = round(sepa["low52"], 2),
+                    距高點pct    = round(from_high_pct, 1),
                 )
+
+            # ── 前一交易日創52週新高篩選（同步收集獨立觀察清單）──
+            near_high_ok = True
+            if cfg["use_near_high"]:
+                if len(df) >= 253:
+                    prev_high = float(df["High"].iloc[-2])
+                    high_52w_prev = float(df["High"].tail(253).iloc[:-1].max())
+                    hit_high = prev_high >= high_52w_prev
+                    near_high_ok = hit_high
+                    if hit_high:
+                        high52_results.append({
+                            "Ticker": ticker,
+                            "現價": round(float(close.iloc[-1]), 2),
+                            "昨日高點": round(prev_high, 2),
+                            "52週最高": round(high_52w_prev, 2),
+                        })
+                else:
+                    near_high_ok = False
+
+            # ── 前一交易日創52週新低（市況觀察，獨立於其他篩選）──
+            if cfg["use_near_low"] and len(df) >= 253:
+                prev_low_price = float(df["Low"].iloc[-2])
+                low_52w_prev = float(df["Low"].tail(253).iloc[:-1].min())
+                if prev_low_price <= low_52w_prev:
+                    low52_results.append({
+                        "Ticker": ticker,
+                        "現價": round(float(close.iloc[-1]), 2),
+                        "昨日低點": round(prev_low_price, 2),
+                        "52週最低": round(low_52w_prev, 2),
+                    })
 
             # ── VCP ──
             if cfg["use_vcp"]:
-                vcp_result = detect_vcp(df, min_contractions=cfg["min_contractions"])
-                if not vcp_result["is_vcp"]:
+                vcp_result = detect_vcp(
+                    df,
+                    min_contractions=cfg["min_contractions"],
+                    max_below_pivot_pct=cfg["max_below_pivot_pct"],
+                )
+                if not vcp_result["pre_breakout"]:
                     vcp_ok = False
                 if cfg["req_vol"] and not vcp_result["volume_declining"]:
                     vcp_ok = False
@@ -493,11 +550,12 @@ def main() -> None:
                 row.update(
                     VCP收縮次數  = vcp_result["num_contractions"],
                     樞軸點       = round(vcp_result["pivot_point"], 2) if vcp_result["pivot_point"] else None,
+                    距樞軸pct    = vcp_result["pct_below_pivot"],
                     最終緊縮幅度 = f"{vcp_result['tightness_pct']:.1f}%" if vcp_result["tightness_pct"] else None,
                     量能遞減     = "✓" if vcp_result["volume_declining"] else "✗",
                 )
 
-            if sepa_ok and vcp_ok:
+            if sepa_ok and vcp_ok and near_high_ok:
                 # Compute today's daily gain from last two closes
                 if len(df) >= 2:
                     prev  = float(df["Close"].iloc[-2])
@@ -515,6 +573,44 @@ def main() -> None:
             continue
 
     prog2.progress(1.0)
+
+    # ── 52週新高觀察（獨立區塊，掃描結束後立即呈現）──
+    if cfg["use_near_high"]:
+        st.divider()
+        if high52_results:
+            st.subheader(f"🚀 前一交易日創52週新高的股票（共 {len(high52_results)} 支）")
+            st.caption("以下股票昨日盤中高點創下近52週新高，不受 SEPA / VCP 篩選條件影響，供觀察市場強勢狀況。")
+            high_df = pd.DataFrame(high52_results).sort_values("Ticker")
+            st.dataframe(high_df, use_container_width=True, hide_index=True)
+            ts_high = datetime.now().strftime("%Y%m%d_%H%M")
+            st.download_button(
+                "⬇️ 下載52週新高清單 CSV",
+                high_df.to_csv(index=False),
+                f"52w_high_{ts_high}.csv",
+                "text/csv",
+                key="dl_high",
+            )
+        else:
+            st.info("🚀 前一交易日沒有股票創下52週新高。")
+
+    # ── 52週新低觀察（獨立區塊，掃描結束後立即呈現）──
+    if cfg["use_near_low"]:
+        st.divider()
+        if low52_results:
+            st.subheader(f"📉 前一交易日創52週新低的股票（共 {len(low52_results)} 支）")
+            st.caption("以下股票昨日盤中低點創下近52週新低，可用於觀察市場整體弱勢狀況。不受 SEPA / VCP 篩選條件影響。")
+            low_df = pd.DataFrame(low52_results).sort_values("Ticker")
+            st.dataframe(low_df, use_container_width=True, hide_index=True)
+            ts_low = datetime.now().strftime("%Y%m%d_%H%M")
+            st.download_button(
+                "⬇️ 下載52週新低清單 CSV",
+                low_df.to_csv(index=False),
+                f"52w_low_{ts_low}.csv",
+                "text/csv",
+                key="dl_low",
+            )
+        else:
+            st.info("📉 前一交易日沒有股票創下52週新低。")
 
     # ── Fundamental screen (optional, slow) ──
     if cfg["use_fundamentals"] and results:
@@ -542,9 +638,13 @@ def main() -> None:
         st.warning("沒有找到符合條件的股票，請嘗試放寬篩選條件（例如降低 SEPA 最低項數或 RS 門檻）。")
         return
 
-    # Build display dataframe (drop internal columns)
+    # Build display dataframe (drop internal columns, rename display keys)
     _internal = {"_vcp", "_daily_gain"}
-    display_rows = [{k: v for k, v in r.items() if k not in _internal} for r in results]
+    _rename = {"距高點pct": "距52週高%", "距樞軸pct": "距樞軸%"}
+    display_rows = [
+        {_rename.get(k, k): v for k, v in r.items() if k not in _internal}
+        for r in results
+    ]
     df_result = pd.DataFrame(display_rows)
 
     if "RS評分" in df_result.columns:
@@ -593,6 +693,7 @@ def main() -> None:
                         price=r.get("Price", 0),
                         eps_growth=r.get("EPS增長%"),
                         rev_growth=r.get("營收增長%"),
+                        from_high_pct=r.get("距高點pct"),
                     )
                     if ok:
                         sent += 1

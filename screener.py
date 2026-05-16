@@ -210,27 +210,39 @@ def _interleave(highs, lows) -> list[tuple[int, float, str]]:
 # VCP main detector
 # ─────────────────────────────────────────────
 
-def detect_vcp(df: pd.DataFrame, min_contractions: int = 2) -> dict:
+def detect_vcp(
+    df: pd.DataFrame,
+    min_contractions: int = 2,
+    max_below_pivot_pct: float = 10.0,
+) -> dict:
     """
-    Detect Volatility Contraction Pattern.
+    Detect Volatility Contraction Pattern on daily bars.
 
     A contraction is a swing-high → swing-low leg within the base.
     VCP requires:
       • ≥ min_contractions successive legs
-      • Each leg's depth < 80 % of the previous (i.e., tightening)
-      • Volume declining across legs (optional flag in caller)
+      • Each leg's depth ≤ 80 % of the previous (tightening)
+      • Volume declining across legs (checked by caller)
+
+    pre_breakout = True when:
+      • VCP pattern is confirmed (is_vcp)
+      • Current close is BELOW the pivot point (not yet broken out)
+      • Current close is within max_below_pivot_pct % of the pivot
 
     Returns a dict:
-      is_vcp, num_contractions, contraction_depths (list of %),
-      volume_declining, pivot_point, tightness_pct
+      is_vcp, pre_breakout, num_contractions, contraction_depths,
+      volume_declining, pivot_point, tightness_pct,
+      pct_below_pivot (None if already broken out)
     """
     result = dict(
         is_vcp=False,
+        pre_breakout=False,
         num_contractions=0,
         contraction_depths=[],
         volume_declining=False,
         pivot_point=None,
         tightness_pct=None,
+        pct_below_pivot=None,
     )
 
     if df is None or len(df) < 100:
@@ -289,11 +301,23 @@ def detect_vcp(df: pd.DataFrame, min_contractions: int = 2) -> dict:
     pivot = float(b_highs[-1][1]) if b_highs else None
     tightness = depths[-1] if depths else None
 
+    # Pre-breakout check: current daily close must be below pivot
+    current_price = float(prices[-1])
+    if pivot and current_price < pivot:
+        pct_below = round((pivot - current_price) / pivot * 100, 2)
+        pre_breakout = is_contracting and pct_below <= max_below_pivot_pct
+    else:
+        # Price is at or above pivot — already broken out, or no valid pivot
+        pct_below = None
+        pre_breakout = False
+
     result.update(
         is_vcp=is_contracting,
+        pre_breakout=pre_breakout,
         contraction_depths=depths,
         volume_declining=vol_declining,
         pivot_point=pivot,
         tightness_pct=tightness,
+        pct_below_pivot=pct_below,
     )
     return result

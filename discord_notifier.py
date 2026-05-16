@@ -10,6 +10,7 @@ def send_discord_alert(
     price: float,
     eps_growth: float | None = None,
     rev_growth: float | None = None,
+    from_high_pct: float | None = None,
     exchange: str = "",
 ) -> bool:
     """Send a Discord embed notification for a 5%+ daily gainer passing all filters."""
@@ -22,6 +23,12 @@ def send_discord_alert(
         {"name": "今日漲幅", "value": f"**+{gain_pct:.1f}%**", "inline": True},
     ]
 
+    if from_high_pct is not None:
+        fields.append({
+            "name": "距52週新高",
+            "value": f"-{from_high_pct:.1f}%",
+            "inline": True,
+        })
     if eps_growth is not None:
         fields.append({
             "name": "季度 EPS 增長 (YoY)",

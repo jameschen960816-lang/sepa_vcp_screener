@@ -40,6 +40,7 @@ MIN_EPS_GROWTH   = 25.0        # 季度 EPS YoY 增長門檻 (%)
 MIN_REV_GROWTH   = 25.0        # 季度營收 YoY 增長門檻 (%)
 SEPA_MIN_PASS    = 7           # SEPA 最少需通過幾項（共 7 項）
 MIN_RS           = 70          # 最低 RS 評分
+MAX_FROM_HIGH_PCT = 10.0       # 距52週新高最大距離 (%)
 BATCH            = 100         # yfinance 批次大小
 
 CONFIG_FILE = Path(__file__).parent / "config.json"
@@ -144,12 +145,17 @@ def run() -> None:
         if sepa is None:
             continue
         rs = float(rs_ratings.get(t, 0))
-        if sepa["sepa_count"] >= SEPA_MIN_PASS and rs >= MIN_RS:
-            gainers[t]["rs"] = int(rs)
-            gainers[t]["sepa_count"] = sepa["sepa_count"]
-            sepa_pass.append(t)
+        if sepa["sepa_count"] < SEPA_MIN_PASS or rs < MIN_RS:
+            continue
+        from_high_pct = (sepa["high52"] - sepa["price"]) / sepa["high52"] * 100
+        if from_high_pct > MAX_FROM_HIGH_PCT:
+            continue
+        gainers[t]["rs"] = int(rs)
+        gainers[t]["sepa_count"] = sepa["sepa_count"]
+        gainers[t]["from_high_pct"] = round(from_high_pct, 1)
+        sepa_pass.append(t)
 
-    print(f"通過 SEPA（{SEPA_MIN_PASS}/7 條件，RS ≥ {MIN_RS}）：{len(sepa_pass)} 支")
+    print(f"通過 SEPA（{SEPA_MIN_PASS}/7，RS ≥ {MIN_RS}，距高點 ≤ {MAX_FROM_HIGH_PCT}%）：{len(sepa_pass)} 支")
     if not sepa_pass:
         print("無股票同時通過漲幅 + SEPA 條件。")
         return
@@ -163,7 +169,7 @@ def run() -> None:
             gainers[t]["eps_growth"] = fundamentals["eps_growth"]
             gainers[t]["rev_growth"] = fundamentals["rev_growth"]
             final.append(t)
-            print(f"  ✓ {t}  漲幅={gainers[t]['gain_pct']:.1f}%  EPS增長={fundamentals['eps_growth']}%  營收增長={fundamentals['rev_growth']}%")
+            print(f"  ✓ {t}  漲幅={gainers[t]['gain_pct']:.1f}%  距高點={gainers[t]['from_high_pct']:.1f}%  EPS增長={fundamentals['eps_growth']}%  營收增長={fundamentals['rev_growth']}%")
         else:
             print(f"  ✗ {t}  基本面未達標：{fundamentals['reason']}")
         time.sleep(0.3)   # avoid rate-limiting
@@ -185,6 +191,7 @@ def run() -> None:
             price=g["price"],
             eps_growth=g.get("eps_growth"),
             rev_growth=g.get("rev_growth"),
+            from_high_pct=g.get("from_high_pct"),
         )
         status = "已發送" if ok else "發送失敗（請確認 Webhook URL）"
         print(f"  Discord 通知 {t}: {status}")
