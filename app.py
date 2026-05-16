@@ -319,6 +319,7 @@ def render_sidebar() -> dict:
 
         st.divider()
         run = st.button("🔍 開始掃描", type="primary", use_container_width=True)
+        reset = st.button("🔄 重新設定", use_container_width=True)
 
     return dict(
         universe_choice=universe_choice,
@@ -338,6 +339,7 @@ def render_sidebar() -> dict:
         webhook_url=webhook_input.strip() if webhook_input else "",
         min_gain_alert=min_gain_alert,
         run=run,
+        reset=reset,
     )
 
 
@@ -351,10 +353,22 @@ def main() -> None:
         "基於 Mark Minervini 的 **SEPA 趨勢模板** 與 **VCP 價格型態** 篩選潛力成長股"
     )
 
+    # Session state controls whether the scan pipeline runs.
+    # st.button() resets to False on every re-run, so we persist the trigger
+    # in session_state to avoid restarting mid-scan on incidental re-runs.
+    if "do_scan" not in st.session_state:
+        st.session_state.do_scan = False
+
     cfg = render_sidebar()
 
-    if not cfg["run"]:
-        # Landing page info
+    if cfg["run"]:
+        st.session_state.do_scan = True
+    if cfg["reset"]:
+        st.session_state.do_scan = False
+        st.rerun()
+
+    if not st.session_state.do_scan:
+        # Landing page info — renders instantly, zero network calls
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("SEPA 趨勢模板（7 項條件）")
