@@ -279,10 +279,10 @@ def render_sidebar() -> dict:
             st.caption("只篩選正在形成 VCP、尚未突破樞軸點的股票")
 
         st.divider()
-        st.subheader("🎯 突破準備：前一交易日創52週新高")
-        use_near_high = st.checkbox("啟用：前一交易日創52週新高篩選", value=True)
+        st.subheader("🎯 前一交易日創52週新高（市況觀察）")
+        use_near_high = st.checkbox("啟用：前一交易日創52週新高觀察", value=False)
         if use_near_high:
-            st.caption("篩選前一交易日盤中高點創下近52週新高的股票")
+            st.caption("獨立觀察清單，不受其他篩選條件影響，供判斷市場整體強勢狀況")
 
         st.divider()
         st.subheader("📉 前一交易日創52週新低（市況觀察）")
@@ -505,23 +505,17 @@ def main() -> None:
                     距高點pct    = round(from_high_pct, 1),
                 )
 
-            # ── 前一交易日創52週新高篩選（同步收集獨立觀察清單）──
-            near_high_ok = True
-            if cfg["use_near_high"]:
-                if len(df) >= 253:
-                    prev_high = float(df["High"].iloc[-2])
-                    high_52w_prev = float(df["High"].tail(253).iloc[:-1].max())
-                    hit_high = prev_high >= high_52w_prev
-                    near_high_ok = hit_high
-                    if hit_high:
-                        high52_results.append({
-                            "Ticker": ticker,
-                            "現價": round(float(close.iloc[-1]), 2),
-                            "昨日高點": round(prev_high, 2),
-                            "52週最高": round(high_52w_prev, 2),
-                        })
-                else:
-                    near_high_ok = False
+            # ── 前一交易日創52週新高（市況觀察，獨立於其他篩選）──
+            if cfg["use_near_high"] and len(df) >= 253:
+                prev_high = float(df["High"].iloc[-2])
+                high_52w_prev = float(df["High"].tail(253).iloc[:-1].max())
+                if prev_high >= high_52w_prev:
+                    high52_results.append({
+                        "Ticker": ticker,
+                        "現價": round(float(close.iloc[-1]), 2),
+                        "昨日高點": round(prev_high, 2),
+                        "52週最高": round(high_52w_prev, 2),
+                    })
 
             # ── 前一交易日創52週新低（市況觀察，獨立於其他篩選）──
             if cfg["use_near_low"] and len(df) >= 253:
@@ -555,7 +549,7 @@ def main() -> None:
                     量能遞減     = "✓" if vcp_result["volume_declining"] else "✗",
                 )
 
-            if sepa_ok and vcp_ok and near_high_ok:
+            if sepa_ok and vcp_ok:
                 # Compute today's daily gain from last two closes
                 if len(df) >= 2:
                     prev  = float(df["Close"].iloc[-2])
@@ -579,7 +573,7 @@ def main() -> None:
         st.divider()
         if high52_results:
             st.subheader(f"🚀 前一交易日創52週新高的股票（共 {len(high52_results)} 支）")
-            st.caption("以下股票昨日盤中高點創下近52週新高，不受 SEPA / VCP 篩選條件影響，供觀察市場強勢狀況。")
+            st.caption("以下股票昨日盤中高點創下近52週新高，不受 SEPA / VCP 篩選條件影響，供觀察市場整體強勢狀況。")
             high_df = pd.DataFrame(high52_results).sort_values("Ticker")
             st.dataframe(high_df, use_container_width=True, hide_index=True)
             ts_high = datetime.now().strftime("%Y%m%d_%H%M")
