@@ -76,7 +76,7 @@ def _batch_download(tickers: list[str], period: str) -> dict[str, pd.DataFrame]:
                 group_by="ticker",
                 auto_adjust=True,
                 progress=False,
-                threads=True,
+                threads=False,
             )
             for t in batch:
                 try:

@@ -411,8 +411,8 @@ def main() -> None:
 
     choice = cfg["universe_choice"]
     if choice == "NYSE + NASDAQ 全市場":
-        with st.spinner("從 NASDAQ Trader 下載完整市場清單…"):
-            tickers, msg = get_nyse_nasdaq_all_tickers()
+        status.info("從 NASDAQ Trader 下載完整市場清單…")
+        tickers, msg = get_nyse_nasdaq_all_tickers()
         if tickers:
             st.success(msg)
         else:
@@ -425,8 +425,8 @@ def main() -> None:
     elif choice == "S&P 500 + NASDAQ 100":
         tickers = list(set(get_sp500_tickers() + get_nasdaq100_tickers()))
     elif choice == "Russell 2000 (自動下載)":
-        with st.spinner("嘗試從 iShares 下載 Russell 2000 成分股…"):
-            tickers, msg = get_russell2000_tickers()
+        status.info("嘗試從 iShares 下載 Russell 2000 成分股…")
+        tickers, msg = get_russell2000_tickers()
         if tickers:
             st.success(msg)
         else:
