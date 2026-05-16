@@ -51,7 +51,7 @@ st.markdown(
 # Data download helper
 # ─────────────────────────────────────────────
 
-BATCH = 100  # tickers per yfinance call
+BATCH = 50  # tickers per yfinance call (keep low for Streamlit Cloud thread limits)
 CONFIG_FILE = Path(__file__).parent / "config.json"
 
 
@@ -119,7 +119,7 @@ def download_all(tickers: list[str], status_placeholder) -> dict[str, pd.DataFra
                 group_by="ticker",
                 auto_adjust=True,
                 progress=False,
-                threads=True,
+                threads=False,
             )
             for t in batch:
                 df = _extract_ticker(raw, t, len(batch))
