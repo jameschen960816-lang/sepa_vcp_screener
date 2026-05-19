@@ -1,7 +1,5 @@
 """
-SEPA trend-template check and VCP pattern detection.
-
-SEPA criteria (Minervini's 7-point trend template):
+SEPA trend-template check (Minervini's 7-point trend template):
   1. Price > SMA200
   2. Price > SMA150
   3. Price > SMA50
@@ -9,16 +7,10 @@ SEPA criteria (Minervini's 7-point trend template):
   5. SMA200 trending up for ≥ 1 month
   6. Price ≥ 75 % of 52-week high  (within 25 % of high)
   7. Price ≥ 125 % of 52-week low  (≥ 25 % above low)
-
-VCP criteria (Volatility Contraction Pattern):
-  • 2-4 successive contractions, each smaller than the previous
-  • Volume declining across contractions
-  • Pivot point = last swing high before final tight area
 """
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -231,159 +223,3 @@ def compute_rs_ratings(close_map: dict[str, pd.Series]) -> pd.Series:
     return (s.rank(pct=True) * 99).round(0)
 
 
-# ─────────────────────────────────────────────
-# VCP helpers
-# ─────────────────────────────────────────────
-
-def _find_swing_points(prices: np.ndarray, window: int = 8
-                        ) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
-    """Return (swing_highs, swing_lows) as (index, price) pairs."""
-    n = len(prices)
-    highs, lows = [], []
-
-    for i in range(window, n - window):
-        segment = prices[i - window: i + window + 1]
-        if prices[i] >= segment.max() - 1e-9:
-            if not highs or i - highs[-1][0] > window:
-                highs.append((i, float(prices[i])))
-        if prices[i] <= segment.min() + 1e-9:
-            if not lows or i - lows[-1][0] > window:
-                lows.append((i, float(prices[i])))
-
-    return highs, lows
-
-
-def _interleave(highs, lows) -> list[tuple[int, float, str]]:
-    """Merge highs and lows into chronological sequence."""
-    seq = [(i, p, "H") for i, p in highs] + [(i, p, "L") for i, p in lows]
-    seq.sort(key=lambda x: x[0])
-
-    # Keep only alternating H/L (remove consecutive same-type, keep extremes)
-    clean: list[tuple[int, float, str]] = []
-    for point in seq:
-        if not clean or clean[-1][2] != point[2]:
-            clean.append(point)
-        else:
-            # Same type: keep the more extreme one
-            if point[2] == "H" and point[1] > clean[-1][1]:
-                clean[-1] = point
-            elif point[2] == "L" and point[1] < clean[-1][1]:
-                clean[-1] = point
-    return clean
-
-
-# ─────────────────────────────────────────────
-# VCP main detector
-# ─────────────────────────────────────────────
-
-def detect_vcp(
-    df: pd.DataFrame,
-    min_contractions: int = 2,
-    max_below_pivot_pct: float = 10.0,
-) -> dict:
-    """
-    Detect Volatility Contraction Pattern on daily bars.
-
-    A contraction is a swing-high → swing-low leg within the base.
-    VCP requires:
-      • ≥ min_contractions successive legs
-      • Each leg's depth ≤ 80 % of the previous (tightening)
-      • Volume declining across legs (checked by caller)
-
-    pre_breakout = True when:
-      • VCP pattern is confirmed (is_vcp)
-      • Current close is BELOW the pivot point (not yet broken out)
-      • Current close is within max_below_pivot_pct % of the pivot
-
-    Returns a dict:
-      is_vcp, pre_breakout, num_contractions, contraction_depths,
-      volume_declining, pivot_point, tightness_pct,
-      pct_below_pivot (None if already broken out)
-    """
-    result = dict(
-        is_vcp=False,
-        pre_breakout=False,
-        num_contractions=0,
-        contraction_depths=[],
-        volume_declining=False,
-        pivot_point=None,
-        tightness_pct=None,
-        pct_below_pivot=None,
-    )
-
-    if df is None or len(df) < 100:
-        return result
-
-    # Analyse last ~6 months
-    lookback = min(len(df), 126)
-    base = df.tail(lookback)
-    prices = base["Close"].values.astype(float)
-    volumes = base["Volume"].values.astype(float)
-
-    highs, lows = _find_swing_points(prices, window=8)
-    if len(highs) < 2 or len(lows) < 1:
-        return result
-
-    # Use swings from the last meaningful high onwards
-    base_start = highs[-3][0] if len(highs) >= 3 else highs[0][0]
-    b_highs = [(i, p) for i, p in highs if i >= base_start]
-    b_lows  = [(i, p) for i, p in lows  if i >= base_start]
-
-    if not b_highs or not b_lows:
-        return result
-
-    seq = _interleave(b_highs, b_lows)
-
-    # Measure contraction depth for each H→L pair
-    contractions: list[dict] = []
-    pending_high: tuple | None = None
-
-    for idx, price, ptype in seq:
-        if ptype == "H":
-            pending_high = (idx, price)
-        elif ptype == "L" and pending_high is not None:
-            h_idx, h_price = pending_high
-            depth_pct = (h_price - price) / h_price * 100
-            avg_vol = float(np.mean(volumes[max(0, h_idx - 3): idx + 4]))
-            contractions.append(
-                dict(high=h_price, low=price, depth=depth_pct, avg_vol=avg_vol)
-            )
-            pending_high = None
-
-    result["num_contractions"] = len(contractions)
-    if len(contractions) < min_contractions:
-        return result
-
-    depths = [c["depth"] for c in contractions]
-    vols   = [c["avg_vol"] for c in contractions]
-
-    # Each contraction must be ≤ 80 % of the previous
-    is_contracting = all(depths[i] <= depths[i - 1] * 0.80 for i in range(1, len(depths)))
-
-    # Volume trend across contractions
-    vol_declining = all(vols[i] < vols[i - 1] for i in range(1, len(vols))) if len(vols) > 1 else True
-
-    # Pivot = last swing high in the base
-    pivot = float(b_highs[-1][1]) if b_highs else None
-    tightness = depths[-1] if depths else None
-
-    # Pre-breakout check: current daily close must be below pivot
-    current_price = float(prices[-1])
-    if pivot and current_price < pivot:
-        pct_below = round((pivot - current_price) / pivot * 100, 2)
-        pre_breakout = is_contracting and pct_below <= max_below_pivot_pct
-    else:
-        # Price is at or above pivot — already broken out, or no valid pivot
-        pct_below = None
-        pre_breakout = False
-
-    result.update(
-        is_vcp=is_contracting,
-        pre_breakout=pre_breakout,
-        contraction_depths=depths,
-        volume_declining=vol_declining,
-        pivot_point=pivot,
-        tightness_pct=tightness,
-        pct_below_pivot=pct_below,
-    )
-    return result

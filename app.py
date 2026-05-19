@@ -1,23 +1,20 @@
 """
-SEPA / VCP 美股篩選器 — Streamlit 主程式
-基於 Mark Minervini 的 SEPA 趨勢模板與 VCP 價格模型
+SEPA 美股篩選器 — Streamlit 主程式
+基於 Mark Minervini 的 SEPA 趨勢模板
 """
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime
-from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 from plotly.subplots import make_subplots
 
-from screener import check_sepa, check_fundamentals, compute_rs_ratings, detect_vcp
+from screener import check_sepa, check_fundamentals, compute_rs_ratings
 from universe import (
     get_nasdaq100_tickers,
     get_nyse_nasdaq_all_tickers,
@@ -25,13 +22,12 @@ from universe import (
     get_sp500_tickers,
     parse_uploaded_file,
 )
-from discord_notifier import send_discord_alert
 
 # ─────────────────────────────────────────────
 # Page config
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="SEPA / VCP 股票篩選器",
+    page_title="SEPA 股票篩選器",
     page_icon="📈",
     layout="wide",
 )
@@ -52,27 +48,6 @@ st.markdown(
 # ─────────────────────────────────────────────
 
 BATCH = 50  # tickers per yfinance call (keep low for Streamlit Cloud thread limits)
-CONFIG_FILE = Path(__file__).parent / "config.json"
-
-
-def _load_webhook_url() -> str:
-    if CONFIG_FILE.exists():
-        try:
-            return json.loads(CONFIG_FILE.read_text(encoding="utf-8")).get("discord_webhook_url", "")
-        except Exception:
-            pass
-    return ""
-
-
-def _save_webhook_url(url: str) -> None:
-    cfg = {}
-    if CONFIG_FILE.exists():
-        try:
-            cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    cfg["discord_webhook_url"] = url
-    CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _extract_ticker(raw, ticker: str, n_tickers: int) -> pd.DataFrame | None:
@@ -138,7 +113,7 @@ def download_all(tickers: list[str], status_placeholder) -> dict[str, pd.DataFra
 # Chart
 # ─────────────────────────────────────────────
 
-def show_chart(df: pd.DataFrame, ticker: str, rs: float | None, vcp: dict) -> None:
+def show_chart(df: pd.DataFrame, ticker: str, rs: float | None) -> None:
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -146,7 +121,6 @@ def show_chart(df: pd.DataFrame, ticker: str, rs: float | None, vcp: dict) -> No
         row_heights=[0.72, 0.28],
     )
 
-    # Candlestick
     fig.add_trace(
         go.Candlestick(
             x=df.index,
@@ -160,7 +134,6 @@ def show_chart(df: pd.DataFrame, ticker: str, rs: float | None, vcp: dict) -> No
         row=1, col=1,
     )
 
-    # Moving averages
     for period, colour, label in [
         (50,  "#2196F3", "SMA 50"),
         (150, "#FF9800", "SMA 150"),
@@ -176,18 +149,6 @@ def show_chart(df: pd.DataFrame, ticker: str, rs: float | None, vcp: dict) -> No
             row=1, col=1,
         )
 
-    # Pivot line
-    if vcp.get("pivot_point"):
-        pivot = vcp["pivot_point"]
-        fig.add_hline(
-            y=pivot,
-            line=dict(color="#FFD700", width=1.5, dash="dash"),
-            annotation_text=f"Pivot {pivot:.2f}",
-            annotation_position="top left",
-            row=1, col=1,
-        )
-
-    # Volume bars
     colors = [
         "#26a69a" if float(df["Close"].iloc[i]) >= float(df["Open"].iloc[i]) else "#ef5350"
         for i in range(len(df))
@@ -206,11 +167,9 @@ def show_chart(df: pd.DataFrame, ticker: str, rs: float | None, vcp: dict) -> No
         row=2, col=1,
     )
 
-    title = f"{ticker}"
+    title = ticker
     if rs is not None:
         title += f"  |  RS Rating: {int(rs)}"
-    if vcp.get("num_contractions", 0):
-        title += f"  |  VCP 收縮次數: {vcp['num_contractions']}"
 
     fig.update_layout(
         title=title,
@@ -257,6 +216,13 @@ def render_sidebar() -> dict:
         if universe_choice == "NYSE + NASDAQ 全市場":
             st.info("全市場約 7000+ 支股票，掃描需 30–60 分鐘，建議改用每日監控腳本 monitor.py。")
 
+        # ── 基本篩選條件（所有股票均適用）───────────
+        st.divider()
+        st.subheader("📌 基本篩選條件")
+        st.caption("適用於所有股票（與其他篩選條件搭配）")
+        min_price = float(st.number_input("最低股價（美元）", min_value=0.0, value=8.0, step=0.5))
+        min_avg_volume = int(st.number_input("最低日均成交量（股）", min_value=0, value=500000, step=50000))
+
         # ── 群組一：技術面 & 基本面篩選 ──────────────
         st.divider()
         st.subheader("🔬 群組一：技術面 & 基本面篩選")
@@ -268,16 +234,6 @@ def render_sidebar() -> dict:
         if use_sepa:
             sepa_min = st.slider("最少符合幾項條件（共 7 項）", 4, 7, 7)
             min_rs   = st.slider("最低 RS 評分", 0, 99, 70)
-
-        use_vcp = st.checkbox("🌀 啟用 VCP 篩選", value=True)
-        min_contractions = 2
-        req_vol = True
-        max_below_pivot_pct = 10.0
-        if use_vcp:
-            min_contractions = st.slider("最少收縮次數", 2, 4, 2)
-            req_vol = st.checkbox("要求成交量逐段遞減", value=True)
-            max_below_pivot_pct = float(st.slider("距樞軸點最大距離 (%)", 1, 20, 10))
-            st.caption("只篩選正在形成 VCP、尚未突破樞軸點的股票")
 
         use_fundamentals = st.checkbox("📊 啟用基本面篩選（EPS / 營收 / 利潤率 / ROE）", value=False)
         min_eps_growth = 20.0
@@ -301,43 +257,22 @@ def render_sidebar() -> dict:
             st.caption("獨立觀察清單，供判斷市場整體弱勢狀況")
 
         st.divider()
-        st.subheader("🔔 Discord 通知")
-        saved_url = _load_webhook_url()
-        webhook_input = st.text_input(
-            "Webhook URL",
-            value=saved_url,
-            placeholder="https://discord.com/api/webhooks/…",
-            type="password",
-        )
-        if webhook_input and webhook_input != saved_url:
-            _save_webhook_url(webhook_input)
-
-        min_gain_alert = float(st.slider("單日漲幅通知門檻 (%)", 3, 20, 5))
-        st.caption(
-            "如何取得 Webhook URL：Discord #stock 頻道 → 編輯頻道 → 整合 → Webhooks → 建立 Webhook → 複製連結"
-        )
-
-        st.divider()
         run = st.button("🔍 開始掃描", type="primary", use_container_width=True)
         reset = st.button("🔄 重新設定", use_container_width=True)
 
     return dict(
         universe_choice=universe_choice,
         uploaded_file=uploaded_file,
+        min_price=min_price,
+        min_avg_volume=min_avg_volume,
         use_sepa=use_sepa,
         sepa_min=sepa_min,
         min_rs=min_rs,
-        use_vcp=use_vcp,
-        min_contractions=min_contractions,
-        req_vol=req_vol,
-        max_below_pivot_pct=max_below_pivot_pct,
         use_near_high=use_near_high,
         use_near_low=use_near_low,
         use_fundamentals=use_fundamentals,
         min_eps_growth=min_eps_growth,
         min_rev_growth=min_rev_growth,
-        webhook_url=webhook_input.strip() if webhook_input else "",
-        min_gain_alert=min_gain_alert,
         run=run,
         reset=reset,
     )
@@ -348,9 +283,9 @@ def render_sidebar() -> dict:
 # ─────────────────────────────────────────────
 
 def main() -> None:
-    st.title("📈 SEPA / VCP 美股篩選器")
+    st.title("📈 SEPA 美股篩選器")
     st.caption(
-        "基於 Mark Minervini 的 **SEPA 趨勢模板** 與 **VCP 價格型態** 篩選潛力成長股"
+        "基於 Mark Minervini 的 **SEPA 趨勢模板** 篩選潛力成長股"
     )
 
     # Session state controls whether the scan pipeline runs.
@@ -369,9 +304,17 @@ def main() -> None:
 
     if not st.session_state.do_scan:
         # Landing page info — renders instantly, zero network calls
+        st.subheader("📌 基本篩選條件（所有股票均適用）")
+        st.markdown(
+            """
+            - 股價 ≥ **$8**
+            - 日均成交量 ≥ **50 萬股**（近 50 日平均）
+            """
+        )
+        st.divider()
         st.subheader("🔬 群組一：技術面 & 基本面篩選")
-        st.caption("三個條件可自由勾選，勾選的條件同時套用（AND 邏輯）")
-        col1, col2, col3 = st.columns(3)
+        st.caption("兩個條件可自由勾選，勾選的條件同時套用（AND 邏輯）")
+        col1, col2 = st.columns(2)
         with col1:
             st.markdown("**📐 SEPA 趨勢模板（7 項）**")
             st.markdown(
@@ -386,24 +329,13 @@ def main() -> None:
                 """
             )
         with col2:
-            st.markdown("**🌀 VCP 型態識別**")
-            st.markdown(
-                """
-                - 2–4 次連續收縮（幅度遞減）
-                - 每次回調深度 ≤ 前次的 80%
-                - 成交量在各收縮段逐漸萎縮
-                - 樞軸點 = 最後一個波段高點
-                - 目前股價接近最終緊縮區上方
-                """
-            )
-        with col3:
             st.markdown("**📊 基本面篩選**")
             st.markdown(
                 """
-                - 季度 EPS（每股盈餘）YoY 增長 > 25%
-                - 季度總營收 YoY 增長 > 25%
-                - 使用 Yahoo Finance 季度損益表
-                - 基準：同一季度對比去年同期
+                - 季度 EPS（每股盈餘）YoY 增長 > 20%
+                - 年度總營收增長 > 15%
+                - 利潤率逐年上升
+                - ROE > 17%
                 - ⚠️ 此條件會增加掃描時間
                 """
             )
@@ -416,7 +348,7 @@ def main() -> None:
             st.markdown(
                 """
                 - 前一交易日盤中高點創下52週新高
-                - 獨立觀察清單，不受 SEPA / VCP 影響
+                - 獨立觀察清單，不受 SEPA 影響
                 - 適合判斷強勢突破股與市場整體強勢
                 """
             )
@@ -425,7 +357,7 @@ def main() -> None:
             st.markdown(
                 """
                 - 前一交易日盤中低點創下52週新低
-                - 獨立觀察清單，不受 SEPA / VCP 影響
+                - 獨立觀察清單，不受 SEPA 影響
                 - 適合判斷市場整體弱勢狀況
                 """
             )
@@ -491,7 +423,7 @@ def main() -> None:
     rs_ratings = compute_rs_ratings(close_map)
 
     # ── Screen ────────────────────────────────
-    st.info("執行 SEPA / VCP 篩選中…")
+    st.info("執行 SEPA 篩選中…")
     prog2 = st.progress(0.0)
     results: list[dict] = []
     high52_results: list[dict] = []
@@ -503,10 +435,15 @@ def main() -> None:
 
         try:
             close = df["Close"]
+            current_price = float(close.iloc[-1])
+            avg_volume = float(df["Volume"].tail(50).mean())
+
+            # ── 基本篩選（股價 & 成交量）──
+            if current_price < cfg["min_price"] or avg_volume < cfg["min_avg_volume"]:
+                continue
+
             row: dict = {"Ticker": ticker}
             sepa_ok = True
-            vcp_ok  = True
-            vcp_result: dict = {}
 
             # ── SEPA ──
             sepa = None
@@ -521,28 +458,28 @@ def main() -> None:
 
                 from_high_pct = (sepa["high52"] - sepa["price"]) / sepa["high52"] * 100
                 row.update(
-                    Price        = round(sepa["price"], 2),
-                    SMA50        = round(sepa["sma50"], 2),
-                    SMA150       = round(sepa["sma150"], 2),
-                    SMA200       = round(sepa["sma200"], 2),
-                    SEPA條件     = f"{sepa['sepa_count']}/7",
-                    RS評分       = int(rs),
-                    高52週       = round(sepa["high52"], 2),
-                    低52週       = round(sepa["low52"], 2),
-                    距高點pct    = round(from_high_pct, 1),
+                    Price     = round(sepa["price"], 2),
+                    日均量萬股 = round(avg_volume / 10000, 1),
+                    SMA50     = round(sepa["sma50"], 2),
+                    SMA150    = round(sepa["sma150"], 2),
+                    SMA200    = round(sepa["sma200"], 2),
+                    SEPA條件  = f"{sepa['sepa_count']}/7",
+                    RS評分    = int(rs),
+                    高52週    = round(sepa["high52"], 2),
+                    低52週    = round(sepa["low52"], 2),
+                    距高點pct = round(from_high_pct, 1),
                 )
 
             # ── 前一交易日創52週新高（市況觀察，獨立於其他篩選）──
             if cfg["use_near_high"] and len(df) >= 2:
                 prev_close = float(df["Close"].iloc[-2])
-                # 過去252個交易日的最高價（不含今天）
                 high_window = df["High"].iloc[max(0, len(df) - 253):-1]
                 high_52w_prev = float(high_window.max())
                 if prev_close >= high_52w_prev * 0.98:
                     gap_pct = round((prev_close - high_52w_prev) / high_52w_prev * 100, 2)
                     high52_results.append({
                         "Ticker": ticker,
-                        "現價": round(float(close.iloc[-1]), 2),
+                        "現價": round(current_price, 2),
                         "前日收盤": round(prev_close, 2),
                         "52週最高": round(high_52w_prev, 2),
                         "距高點%": gap_pct,
@@ -551,41 +488,19 @@ def main() -> None:
             # ── 前一交易日創52週新低（市況觀察，獨立於其他篩選）──
             if cfg["use_near_low"] and len(df) >= 2:
                 prev_close_low = float(df["Close"].iloc[-2])
-                # 過去252個交易日的最低價（不含今天）
                 low_window = df["Low"].iloc[max(0, len(df) - 253):-1]
                 low_52w_prev = float(low_window.min())
                 if prev_close_low <= low_52w_prev * 1.02:
                     gap_pct_low = round((prev_close_low - low_52w_prev) / low_52w_prev * 100, 2)
                     low52_results.append({
                         "Ticker": ticker,
-                        "現價": round(float(close.iloc[-1]), 2),
+                        "現價": round(current_price, 2),
                         "前日收盤": round(prev_close_low, 2),
                         "52週最低": round(low_52w_prev, 2),
                         "距低點%": gap_pct_low,
                     })
 
-            # ── VCP ──
-            if cfg["use_vcp"]:
-                vcp_result = detect_vcp(
-                    df,
-                    min_contractions=cfg["min_contractions"],
-                    max_below_pivot_pct=cfg["max_below_pivot_pct"],
-                )
-                if not vcp_result["pre_breakout"]:
-                    vcp_ok = False
-                if cfg["req_vol"] and not vcp_result["volume_declining"]:
-                    vcp_ok = False
-
-                row.update(
-                    VCP收縮次數  = vcp_result["num_contractions"],
-                    樞軸點       = round(vcp_result["pivot_point"], 2) if vcp_result["pivot_point"] else None,
-                    距樞軸pct    = vcp_result["pct_below_pivot"],
-                    最終緊縮幅度 = f"{vcp_result['tightness_pct']:.1f}%" if vcp_result["tightness_pct"] else None,
-                    量能遞減     = "✓" if vcp_result["volume_declining"] else "✗",
-                )
-
-            if sepa_ok and vcp_ok:
-                # Compute today's daily gain from last two closes
+            if sepa_ok:
                 if len(df) >= 2:
                     prev  = float(df["Close"].iloc[-2])
                     today = float(df["Close"].iloc[-1])
@@ -593,10 +508,7 @@ def main() -> None:
                 else:
                     daily_gain = 0.0
                 row["今日漲幅%"] = round(daily_gain, 2)
-                row["_daily_gain"] = daily_gain
-
                 results.append(row)
-                results[-1]["_vcp"] = vcp_result  # keep for chart detail
 
         except Exception:
             continue
@@ -608,7 +520,7 @@ def main() -> None:
         st.divider()
         if high52_results:
             st.subheader(f"🚀 前一交易日創52週新高的股票（共 {len(high52_results)} 支）")
-            st.caption("以下股票昨日盤中高點創下近52週新高，不受 SEPA / VCP 篩選條件影響，供觀察市場整體強勢狀況。")
+            st.caption("以下股票昨日盤中高點創下近52週新高，不受 SEPA 篩選條件影響，供觀察市場整體強勢狀況。")
             high_df = pd.DataFrame(high52_results).sort_values("Ticker")
             st.dataframe(high_df, use_container_width=True, hide_index=True)
             ts_high = datetime.now().strftime("%Y%m%d_%H%M")
@@ -627,7 +539,7 @@ def main() -> None:
         st.divider()
         if low52_results:
             st.subheader(f"📉 前一交易日創52週新低的股票（共 {len(low52_results)} 支）")
-            st.caption("以下股票昨日盤中低點創下近52週新低，可用於觀察市場整體弱勢狀況。不受 SEPA / VCP 篩選條件影響。")
+            st.caption("以下股票昨日盤中低點創下近52週新低，可用於觀察市場整體弱勢狀況。不受 SEPA 篩選條件影響。")
             low_df = pd.DataFrame(low52_results).sort_values("Ticker")
             st.dataframe(low_df, use_container_width=True, hide_index=True)
             ts_low = datetime.now().strftime("%Y%m%d_%H%M")
@@ -671,8 +583,8 @@ def main() -> None:
         return
 
     # Build display dataframe (drop internal columns, rename display keys)
-    _internal = {"_vcp", "_daily_gain"}
-    _rename = {"距高點pct": "距52週高%", "距樞軸pct": "距樞軸%"}
+    _internal = {"_daily_gain"}
+    _rename = {"距高點pct": "距52週高%"}
     display_rows = [
         {_rename.get(k, k): v for k, v in r.items() if k not in _internal}
         for r in results
@@ -689,52 +601,9 @@ def main() -> None:
     st.download_button(
         "⬇️ 下載結果 CSV",
         df_result.to_csv(index=False),
-        f"sepa_vcp_{ts}.csv",
+        f"sepa_{ts}.csv",
         "text/csv",
     )
-
-    # ── Discord 通知：單日漲幅達門檻的股票 ──
-    gainers_alert = [
-        r for r in results
-        if r.get("_daily_gain", 0) >= cfg["min_gain_alert"]
-    ]
-    if gainers_alert:
-        st.divider()
-        st.subheader(f"🚀 今日漲幅 ≥ {cfg['min_gain_alert']:.0f}% 的篩選通過股票")
-        alert_df = pd.DataFrame([
-            {
-                "Ticker":   r["Ticker"],
-                "今日漲幅%": r.get("_daily_gain", 0),
-                "現價":      r.get("Price", ""),
-                "EPS增長%":  r.get("EPS增長%", "—"),
-                "營收增長%": r.get("營收增長%", "—"),
-            }
-            for r in gainers_alert
-        ])
-        st.dataframe(alert_df, use_container_width=True, hide_index=True)
-
-        webhook = cfg["webhook_url"]
-        if webhook:
-            if st.button("📣 發送 Discord 通知", type="primary"):
-                sent = 0
-                for r in gainers_alert:
-                    ok = send_discord_alert(
-                        webhook_url=webhook,
-                        ticker=r["Ticker"],
-                        gain_pct=r.get("_daily_gain", 0),
-                        price=r.get("Price", 0),
-                        eps_growth=r.get("EPS增長%"),
-                        rev_growth=r.get("營收增長%"),
-                        from_high_pct=r.get("距高點pct"),
-                    )
-                    if ok:
-                        sent += 1
-                if sent:
-                    st.success(f"✅ 已發送 {sent} 則通知到 Discord #stock 頻道！")
-                else:
-                    st.error("發送失敗，請確認 Webhook URL 是否正確。")
-        else:
-            st.info("在左側欄填入 Discord Webhook URL 即可一鍵發送通知。")
 
     # ── Detail chart ─────────────────────────
     st.divider()
@@ -744,22 +613,8 @@ def main() -> None:
     selected = st.selectbox("選擇股票", ticker_list)
 
     if selected and selected in all_data:
-        # Retrieve saved vcp result
-        vcp_detail: dict = next(
-            (r["_vcp"] for r in results if r["Ticker"] == selected), {}
-        )
         rs_val = rs_ratings.get(selected)
-        show_chart(all_data[selected], selected, rs_val, vcp_detail)
-
-        # Contraction table
-        depths = vcp_detail.get("contraction_depths", [])
-        if depths:
-            st.markdown("**VCP 收縮幅度明細**")
-            contraction_df = pd.DataFrame(
-                {"收縮": [f"第 {i+1} 次" for i in range(len(depths))],
-                 "回調幅度 (%)": [f"{d:.1f}" for d in depths]}
-            )
-            st.table(contraction_df)
+        show_chart(all_data[selected], selected, rs_val)
 
 
 if __name__ == "__main__":
