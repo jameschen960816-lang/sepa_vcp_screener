@@ -257,18 +257,19 @@ def render_sidebar() -> dict:
         if universe_choice == "NYSE + NASDAQ 全市場":
             st.info("全市場約 7000+ 支股票，掃描需 30–60 分鐘，建議改用每日監控腳本 monitor.py。")
 
+        # ── 群組一：技術面 & 基本面篩選 ──────────────
         st.divider()
-        st.subheader("📐 SEPA 趨勢模板")
-        use_sepa = st.checkbox("啟用 SEPA 篩選", value=True)
+        st.subheader("🔬 群組一：技術面 & 基本面篩選")
+        st.caption("可自由勾選，勾選的條件同時套用（AND 邏輯）")
+
+        use_sepa = st.checkbox("📐 啟用 SEPA 篩選", value=True)
         sepa_min = 7
         min_rs = 70
         if use_sepa:
             sepa_min = st.slider("最少符合幾項條件（共 7 項）", 4, 7, 7)
             min_rs   = st.slider("最低 RS 評分", 0, 99, 70)
 
-        st.divider()
-        st.subheader("🌀 VCP 型態識別（日線）")
-        use_vcp = st.checkbox("啟用 VCP 篩選", value=True)
+        use_vcp = st.checkbox("🌀 啟用 VCP 篩選", value=True)
         min_contractions = 2
         req_vol = True
         max_below_pivot_pct = 10.0
@@ -278,27 +279,26 @@ def render_sidebar() -> dict:
             max_below_pivot_pct = float(st.slider("距樞軸點最大距離 (%)", 1, 20, 10))
             st.caption("只篩選正在形成 VCP、尚未突破樞軸點的股票")
 
-        st.divider()
-        st.subheader("🎯 前一交易日創52週新高（市況觀察）")
-        use_near_high = st.checkbox("啟用：前一交易日創52週新高觀察", value=False)
-        if use_near_high:
-            st.caption("獨立觀察清單，不受其他篩選條件影響，供判斷市場整體強勢狀況")
-
-        st.divider()
-        st.subheader("📉 前一交易日創52週新低（市況觀察）")
-        use_near_low = st.checkbox("啟用：前一交易日創52週新低觀察", value=False)
-        if use_near_low:
-            st.caption("獨立觀察清單，不受其他篩選條件影響，供判斷市場整體弱勢狀況")
-
-        st.divider()
-        st.subheader("📊 基本面篩選")
-        use_fundamentals = st.checkbox("啟用基本面篩選（EPS & 營收 YoY）", value=False)
-        min_eps_growth = 25.0
-        min_rev_growth = 25.0
+        use_fundamentals = st.checkbox("📊 啟用基本面篩選（EPS / 營收 / 利潤率 / ROE）", value=False)
+        min_eps_growth = 20.0
+        min_rev_growth = 15.0
         if use_fundamentals:
-            min_eps_growth = float(st.slider("季度 EPS 增長門檻 (%)", 10, 100, 25))
-            min_rev_growth = float(st.slider("季度營收增長門檻 (%)", 10, 100, 25))
+            min_eps_growth = float(st.slider("季度 EPS 年增率門檻 (%)", 10, 100, 20))
+            min_rev_growth = float(st.slider("年度營收成長門檻 (%)", 10, 100, 15))
             st.caption("⚠️ 基本面篩選每支股票需額外 API 請求，會大幅增加掃描時間。")
+
+        # ── 群組二：52週高低點觀察 ─────────────────
+        st.divider()
+        st.subheader("📡 群組二：52週高低點觀察")
+        st.caption("可自由勾選，獨立於群組一，不受其他篩選條件影響")
+
+        use_near_high = st.checkbox("🚀 前一交易日創52週新高", value=False)
+        if use_near_high:
+            st.caption("獨立觀察清單，供判斷市場整體強勢狀況")
+
+        use_near_low = st.checkbox("📉 前一交易日創52週新低", value=False)
+        if use_near_low:
+            st.caption("獨立觀察清單，供判斷市場整體弱勢狀況")
 
         st.divider()
         st.subheader("🔔 Discord 通知")
@@ -369,51 +369,64 @@ def main() -> None:
 
     if not st.session_state.do_scan:
         # Landing page info — renders instantly, zero network calls
-        col1, col2 = st.columns(2)
+        st.subheader("🔬 群組一：技術面 & 基本面篩選")
+        st.caption("三個條件可自由勾選，勾選的條件同時套用（AND 邏輯）")
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.subheader("SEPA 趨勢模板（7 項條件）")
+            st.markdown("**📐 SEPA 趨勢模板（7 項）**")
             st.markdown(
                 """
                 1. 股價 > SMA 200
                 2. 股價 > SMA 150
                 3. 股價 > SMA 50
-                4. SMA 50 > SMA 150 > SMA 200（正確排列）
+                4. SMA 50 > SMA 150 > SMA 200
                 5. SMA 200 至少上升 1 個月
-                6. 股價在 52 週高點的 75 % 以上
-                7. 股價在 52 週低點的 125 % 以上（漲幅 ≥ 25 %）
+                6. 股價在 52 週高點的 75% 以上
+                7. 股價在 52 週低點的 125% 以上
                 """
             )
         with col2:
-            st.subheader("VCP 型態識別條件")
+            st.markdown("**🌀 VCP 型態識別**")
             st.markdown(
                 """
-                - 2–4 次連續收縮（每次波動幅度遞減）
-                - 每次回調深度 ≤ 前一次的 80 %
+                - 2–4 次連續收縮（幅度遞減）
+                - 每次回調深度 ≤ 前次的 80%
                 - 成交量在各收縮段逐漸萎縮
-                - 樞軸點（Pivot Point）= 最後一個波段高點
+                - 樞軸點 = 最後一個波段高點
                 - 目前股價接近最終緊縮區上方
                 """
             )
-        st.divider()
-        col3, col4 = st.columns(2)
         with col3:
-            st.subheader("基本面篩選條件")
+            st.markdown("**📊 基本面篩選**")
             st.markdown(
                 """
-                - 近期季度 EPS（每股盈餘）YoY 增長 > 25%
-                - 近期季度總營收 YoY 增長 > 25%
-                - 使用 Yahoo Finance 季度損益表計算
+                - 季度 EPS（每股盈餘）YoY 增長 > 25%
+                - 季度總營收 YoY 增長 > 25%
+                - 使用 Yahoo Finance 季度損益表
                 - 基準：同一季度對比去年同期
+                - ⚠️ 此條件會增加掃描時間
                 """
             )
+        st.divider()
+        st.subheader("📡 群組二：52週高低點觀察")
+        st.caption("兩個條件可自由勾選，獨立於群組一，不受其他篩選條件影響")
+        col4, col5 = st.columns(2)
         with col4:
-            st.subheader("52週高低點篩選")
+            st.markdown("**🚀 創52週新高**")
             st.markdown(
                 """
-                - **創52週新高**：前一交易日盤中高點創下52週新高
-                - **創52週新低**：前一交易日盤中低點創下52週新低
-                - 新低清單為獨立觀察區，不受 SEPA / VCP 影響
-                - 適合判斷強勢突破股與市場整體弱勢狀況
+                - 前一交易日盤中高點創下52週新高
+                - 獨立觀察清單，不受 SEPA / VCP 影響
+                - 適合判斷強勢突破股與市場整體強勢
+                """
+            )
+        with col5:
+            st.markdown("**📉 創52週新低**")
+            st.markdown(
+                """
+                - 前一交易日盤中低點創下52週新低
+                - 獨立觀察清單，不受 SEPA / VCP 影響
+                - 適合判斷市場整體弱勢狀況
                 """
             )
         st.info("設定好篩選條件後，點選左側的「開始掃描」按鈕。")
@@ -520,27 +533,35 @@ def main() -> None:
                 )
 
             # ── 前一交易日創52週新高（市況觀察，獨立於其他篩選）──
-            if cfg["use_near_high"] and len(df) >= 253:
-                prev_high = float(df["High"].iloc[-2])
-                high_52w_prev = float(df["High"].tail(253).iloc[:-1].max())
-                if prev_high >= high_52w_prev:
+            if cfg["use_near_high"] and len(df) >= 2:
+                prev_close = float(df["Close"].iloc[-2])
+                # 過去252個交易日的最高價（不含今天）
+                high_window = df["High"].iloc[max(0, len(df) - 253):-1]
+                high_52w_prev = float(high_window.max())
+                if prev_close >= high_52w_prev * 0.98:
+                    gap_pct = round((prev_close - high_52w_prev) / high_52w_prev * 100, 2)
                     high52_results.append({
                         "Ticker": ticker,
                         "現價": round(float(close.iloc[-1]), 2),
-                        "昨日高點": round(prev_high, 2),
+                        "前日收盤": round(prev_close, 2),
                         "52週最高": round(high_52w_prev, 2),
+                        "距高點%": gap_pct,
                     })
 
             # ── 前一交易日創52週新低（市況觀察，獨立於其他篩選）──
-            if cfg["use_near_low"] and len(df) >= 253:
-                prev_low_price = float(df["Low"].iloc[-2])
-                low_52w_prev = float(df["Low"].tail(253).iloc[:-1].min())
-                if prev_low_price <= low_52w_prev:
+            if cfg["use_near_low"] and len(df) >= 2:
+                prev_close_low = float(df["Close"].iloc[-2])
+                # 過去252個交易日的最低價（不含今天）
+                low_window = df["Low"].iloc[max(0, len(df) - 253):-1]
+                low_52w_prev = float(low_window.min())
+                if prev_close_low <= low_52w_prev * 1.02:
+                    gap_pct_low = round((prev_close_low - low_52w_prev) / low_52w_prev * 100, 2)
                     low52_results.append({
                         "Ticker": ticker,
                         "現價": round(float(close.iloc[-1]), 2),
-                        "昨日低點": round(prev_low_price, 2),
+                        "前日收盤": round(prev_close_low, 2),
                         "52週最低": round(low_52w_prev, 2),
+                        "距低點%": gap_pct_low,
                     })
 
             # ── VCP ──
@@ -629,11 +650,14 @@ def main() -> None:
             prog3.progress((i + 1) / len(results))
             fund = check_fundamentals(
                 row["Ticker"],
-                min_growth_pct=min(cfg["min_eps_growth"], cfg["min_rev_growth"]),
+                min_eps_growth=cfg["min_eps_growth"],
+                min_rev_growth=cfg["min_rev_growth"],
             )
             if fund["pass"]:
-                row["EPS增長%"] = fund["eps_growth"]
-                row["營收增長%"] = fund["rev_growth"]
+                row["季EPS年增%"] = fund["eps_growth"]
+                row["年營收增%"] = fund["rev_growth"]
+                row["利潤率上升"] = "✓" if fund["margin_rising"] else "✗"
+                row["ROE%"] = fund["roe"]
                 filtered.append(row)
             time.sleep(0.25)
         prog3.progress(1.0)

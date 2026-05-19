@@ -5,7 +5,7 @@ monitor.py — 每日自動監控腳本
   1. 從 NASDAQ Trader 取得 NYSE + NASDAQ 全部股票（~7000–8000 支）
   2. 批次下載近兩日收盤，篩選出今日漲幅 ≥ 5% 的股票
   3. 對漲幅達標股票下載一年歷史，執行 SEPA 趨勢模板篩選
-  4. 對通過 SEPA 的股票查詢基本面（季度 EPS & 營收 YoY ≥ 25%）
+  4. 對通過 SEPA 的股票查詢基本面（季EPS年增 ≥ 20%、年度營收增 ≥ 15%、利潤率上升、ROE ≥ 17%）
   5. 全部條件通過者發送 Discord 通知
 
 用法：
@@ -36,8 +36,9 @@ from universe import _fetch_nyse_nasdaq
 # ── 設定 ──────────────────────────────────────────────────────────
 WEBHOOK_URL      = ""          # ← 若不用環境變數或 config.json，在此填入 Webhook URL
 MIN_DAILY_GAIN   = 5.0         # 單日漲幅門檻 (%)
-MIN_EPS_GROWTH   = 25.0        # 季度 EPS YoY 增長門檻 (%)
-MIN_REV_GROWTH   = 25.0        # 季度營收 YoY 增長門檻 (%)
+MIN_EPS_GROWTH   = 20.0        # 季度 EPS YoY 增長門檻 (%)
+MIN_REV_GROWTH   = 15.0        # 年度營收成長門檻 (%)
+MIN_ROE          = 17.0        # ROE 門檻 (%)
 SEPA_MIN_PASS    = 7           # SEPA 最少需通過幾項（共 7 項）
 MIN_RS           = 70          # 最低 RS 評分
 MAX_FROM_HIGH_PCT = 10.0       # 距52週新高最大距離 (%)
@@ -164,12 +165,20 @@ def run() -> None:
     print(f"正在查詢 {len(sepa_pass)} 支股票的基本面資料…")
     final: list[str] = []
     for t in sepa_pass:
-        fundamentals = check_fundamentals(t, min_growth_pct=min(MIN_EPS_GROWTH, MIN_REV_GROWTH))
+        fundamentals = check_fundamentals(
+            t,
+            min_eps_growth=MIN_EPS_GROWTH,
+            min_rev_growth=MIN_REV_GROWTH,
+            min_roe=MIN_ROE,
+        )
         if fundamentals["pass"]:
-            gainers[t]["eps_growth"] = fundamentals["eps_growth"]
-            gainers[t]["rev_growth"] = fundamentals["rev_growth"]
+            gainers[t]["eps_growth"]    = fundamentals["eps_growth"]
+            gainers[t]["rev_growth"]    = fundamentals["rev_growth"]
+            gainers[t]["margin_rising"] = fundamentals["margin_rising"]
+            gainers[t]["roe"]           = fundamentals["roe"]
             final.append(t)
-            print(f"  ✓ {t}  漲幅={gainers[t]['gain_pct']:.1f}%  距高點={gainers[t]['from_high_pct']:.1f}%  EPS增長={fundamentals['eps_growth']}%  營收增長={fundamentals['rev_growth']}%")
+            margin_str = "↑" if fundamentals["margin_rising"] else "↓"
+            print(f"  ✓ {t}  漲幅={gainers[t]['gain_pct']:.1f}%  距高點={gainers[t]['from_high_pct']:.1f}%  季EPS年增={fundamentals['eps_growth']}%  年營收增={fundamentals['rev_growth']}%  利潤率={margin_str}  ROE={fundamentals['roe']}%")
         else:
             print(f"  ✗ {t}  基本面未達標：{fundamentals['reason']}")
         time.sleep(0.3)   # avoid rate-limiting

@@ -27,61 +27,127 @@ import yfinance as yf
 # Fundamental screen
 # ─────────────────────────────────────────────
 
-def check_fundamentals(ticker: str, min_growth_pct: float = 25.0) -> dict:
+def check_fundamentals(
+    ticker: str,
+    min_eps_growth: float = 20.0,
+    min_rev_growth: float = 15.0,
+    min_roe: float = 17.0,
+) -> dict:
     """
-    Verify quarterly YoY EPS and revenue growth via yfinance.
+    Verify four fundamental conditions via yfinance:
+      1. Quarterly YoY EPS growth  > min_eps_growth  (%)
+      2. Annual revenue growth     > min_rev_growth   (%)
+      3. Net profit margin rising  (current year vs prior)
+      4. ROE                       > min_roe           (%)
 
     Returns:
         {
           "pass": bool,
-          "eps_growth": float | None,   # YoY % change, most-recent quarter
-          "rev_growth": float | None,   # YoY % change, most-recent quarter
-          "reason": str,               # human-readable failure reason
+          "eps_growth":    float | None,   # quarterly YoY %
+          "rev_growth":    float | None,   # annual YoY %
+          "margin_rising": bool  | None,   # True = margin improved
+          "roe":           float | None,   # % (e.g. 18.5)
+          "reason":        str,
         }
     """
-    result: dict = {"pass": False, "eps_growth": None, "rev_growth": None, "reason": ""}
+    result: dict = {
+        "pass": False,
+        "eps_growth": None,
+        "rev_growth": None,
+        "margin_rising": None,
+        "roe": None,
+        "reason": "",
+    }
 
     try:
-        stmt = yf.Ticker(ticker).quarterly_income_stmt
+        tk = yf.Ticker(ticker)
+        q_stmt = tk.quarterly_income_stmt
+        a_stmt = tk.income_stmt
+        info   = tk.info or {}
     except Exception as exc:
         result["reason"] = f"API 錯誤: {exc}"
         return result
 
-    if stmt is None or stmt.empty or stmt.shape[1] < 5:
-        result["reason"] = "季度財報資料不足（需至少 5 季）"
-        return result
+    reasons: list[str] = []
 
-    def _yoy(row_names: list[str]) -> float | None:
-        for name in row_names:
-            if name in stmt.index:
-                row = stmt.loc[name].dropna()
+    # ── 1. Quarterly EPS YoY growth ──────────────────
+    eps_growth: float | None = None
+    if q_stmt is not None and not q_stmt.empty and q_stmt.shape[1] >= 5:
+        for name in ["Basic EPS", "Diluted EPS"]:
+            if name in q_stmt.index:
+                row = q_stmt.loc[name].dropna()
                 if len(row) >= 5:
                     current  = float(row.iloc[0])
                     year_ago = float(row.iloc[4])
-                    if year_ago > 0:
-                        return (current - year_ago) / year_ago * 100
-        return None
+                    if year_ago != 0:
+                        eps_growth = (current - year_ago) / abs(year_ago) * 100
+                    break
 
-    rev_growth = _yoy(["Total Revenue", "Revenue"])
-    eps_growth = _yoy(["Basic EPS", "Diluted EPS"])
-
-    result["rev_growth"] = round(rev_growth, 1) if rev_growth is not None else None
     result["eps_growth"] = round(eps_growth, 1) if eps_growth is not None else None
-
-    rev_ok = rev_growth is not None and rev_growth >= min_growth_pct
-    eps_ok = eps_growth is not None and eps_growth >= min_growth_pct
-
-    reasons = []
-    if not rev_ok:
-        reasons.append(
-            f"營收增長不足 ({rev_growth:.1f}%)" if rev_growth is not None else "缺少營收資料"
-        )
+    eps_ok = eps_growth is not None and eps_growth >= min_eps_growth
     if not eps_ok:
         reasons.append(
-            f"EPS 增長不足 ({eps_growth:.1f}%)" if eps_growth is not None else "缺少 EPS 資料"
+            f"季EPS年增率不足 ({eps_growth:.1f}%)" if eps_growth is not None else "缺少季度 EPS 資料"
         )
 
-    result["pass"]   = rev_ok and eps_ok
+    # ── 2. Annual revenue growth & 3. Profit margin ──
+    rev_growth: float | None = None
+    margin_rising: bool | None = None
+
+    if a_stmt is not None and not a_stmt.empty and a_stmt.shape[1] >= 2:
+        rev_row = None
+        for name in ["Total Revenue", "Revenue"]:
+            if name in a_stmt.index:
+                rev_row = a_stmt.loc[name].dropna()
+                break
+
+        if rev_row is not None and len(rev_row) >= 2:
+            curr_rev = float(rev_row.iloc[0])
+            prev_rev = float(rev_row.iloc[1])
+            if prev_rev > 0:
+                rev_growth = (curr_rev - prev_rev) / prev_rev * 100
+
+        ni_row = None
+        for name in ["Net Income", "Net Income Common Stockholders"]:
+            if name in a_stmt.index:
+                ni_row = a_stmt.loc[name].dropna()
+                break
+
+        if rev_row is not None and ni_row is not None and len(rev_row) >= 2 and len(ni_row) >= 2:
+            curr_rev_f = float(rev_row.iloc[0])
+            prev_rev_f = float(rev_row.iloc[1])
+            if curr_rev_f != 0 and prev_rev_f != 0:
+                curr_margin = float(ni_row.iloc[0]) / curr_rev_f
+                prev_margin = float(ni_row.iloc[1]) / prev_rev_f
+                margin_rising = curr_margin > prev_margin
+
+    result["rev_growth"]    = round(rev_growth, 1) if rev_growth is not None else None
+    result["margin_rising"] = margin_rising
+
+    rev_ok = rev_growth is not None and rev_growth >= min_rev_growth
+    if not rev_ok:
+        reasons.append(
+            f"年度營收增長不足 ({rev_growth:.1f}%)" if rev_growth is not None else "缺少年度營收資料"
+        )
+
+    margin_ok = margin_rising is True
+    if not margin_ok:
+        reasons.append("缺少利潤率資料" if margin_rising is None else "利潤率未上升")
+
+    # ── 4. ROE ───────────────────────────────────────
+    roe: float | None = None
+    roe_raw = info.get("returnOnEquity")
+    if roe_raw is not None:
+        roe = round(float(roe_raw) * 100, 1)
+
+    result["roe"] = roe
+    roe_ok = roe is not None and roe >= min_roe
+    if not roe_ok:
+        reasons.append(
+            f"ROE 不足 ({roe:.1f}%)" if roe is not None else "缺少 ROE 資料"
+        )
+
+    result["pass"]   = eps_ok and rev_ok and margin_ok and roe_ok
     result["reason"] = "；".join(reasons)
     return result
 
