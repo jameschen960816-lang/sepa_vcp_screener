@@ -256,6 +256,15 @@ def render_sidebar() -> dict:
         if use_near_low:
             st.caption("獨立觀察清單，供判斷市場整體弱勢狀況")
 
+        # ── 群組三：新上市公司篩選 ─────────────────
+        st.divider()
+        st.subheader("🆕 群組三：新上市公司觀察")
+        st.caption("可自由勾選，獨立於群組一，不受其他篩選條件影響")
+
+        use_new_listing = st.checkbox("🆕 上市未滿半年的公司", value=False)
+        if use_new_listing:
+            st.caption("獨立觀察清單，篩選出近 180 天內首次交易的新股")
+
         st.divider()
         run = st.button("🔍 開始掃描", type="primary", use_container_width=True)
         reset = st.button("🔄 重新設定", use_container_width=True)
@@ -270,6 +279,7 @@ def render_sidebar() -> dict:
         min_rs=min_rs,
         use_near_high=use_near_high,
         use_near_low=use_near_low,
+        use_new_listing=use_new_listing,
         use_fundamentals=use_fundamentals,
         min_eps_growth=min_eps_growth,
         min_rev_growth=min_rev_growth,
@@ -361,6 +371,17 @@ def main() -> None:
                 - 適合判斷市場整體弱勢狀況
                 """
             )
+        st.divider()
+        st.subheader("🆕 群組三：新上市公司觀察")
+        st.caption("可自由勾選，獨立於群組一，不受其他篩選條件影響")
+        st.markdown("**🆕 上市未滿半年的公司**")
+        st.markdown(
+            """
+            - 首次交易日在近 180 天內的新股
+            - 獨立觀察清單，不受 SEPA 影響
+            - 顯示上市日期、上市天數與日均成交量
+            """
+        )
         st.info("設定好篩選條件後，點選左側的「開始掃描」按鈕。")
         return
 
@@ -428,6 +449,7 @@ def main() -> None:
     results: list[dict] = []
     high52_results: list[dict] = []
     low52_results: list[dict] = []
+    new_listing_results: list[dict] = []
     total = len(all_data)
 
     for idx, (ticker, df) in enumerate(all_data.items()):
@@ -500,6 +522,21 @@ def main() -> None:
                         "距低點%": gap_pct_low,
                     })
 
+            # ── 上市未滿半年（市況觀察，獨立於其他篩選）──
+            if cfg["use_new_listing"]:
+                first_date = df.index[0]
+                last_date = df.index[-1]
+                cutoff = last_date - pd.Timedelta(days=180)
+                if first_date >= cutoff:
+                    days_listed = (last_date - first_date).days
+                    new_listing_results.append({
+                        "Ticker": ticker,
+                        "現價": round(current_price, 2),
+                        "上市日期": first_date.strftime("%Y-%m-%d"),
+                        "上市天數": days_listed,
+                        "日均量萬股": round(avg_volume / 10000, 1),
+                    })
+
             if sepa_ok:
                 if len(df) >= 2:
                     prev  = float(df["Close"].iloc[-2])
@@ -552,6 +589,25 @@ def main() -> None:
             )
         else:
             st.info("📉 前一交易日沒有股票創下52週新低。")
+
+    # ── 上市未滿半年觀察（獨立區塊）──
+    if cfg["use_new_listing"]:
+        st.divider()
+        if new_listing_results:
+            st.subheader(f"🆕 上市未滿半年的公司（共 {len(new_listing_results)} 支）")
+            st.caption("以下股票首次交易日在近 180 天內，不受 SEPA 篩選條件影響，供觀察新股表現。")
+            new_listing_df = pd.DataFrame(new_listing_results).sort_values("上市天數")
+            st.dataframe(new_listing_df, use_container_width=True, hide_index=True)
+            ts_nl = datetime.now().strftime("%Y%m%d_%H%M")
+            st.download_button(
+                "⬇️ 下載新上市清單 CSV",
+                new_listing_df.to_csv(index=False),
+                f"new_listing_{ts_nl}.csv",
+                "text/csv",
+                key="dl_new_listing",
+            )
+        else:
+            st.info("🆕 目前股票池中沒有上市未滿半年的公司。")
 
     # ── Fundamental screen (optional, slow) ──
     if cfg["use_fundamentals"] and results:
