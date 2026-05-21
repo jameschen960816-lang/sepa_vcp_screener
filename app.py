@@ -537,7 +537,7 @@ def main() -> None:
                         "日均量萬股": round(avg_volume / 10000, 1),
                     })
 
-            if sepa_ok:
+            if sepa_ok and (cfg["use_sepa"] or cfg["use_fundamentals"]):
                 if len(df) >= 2:
                     prev  = float(df["Close"].iloc[-2])
                     today = float(df["Close"].iloc[-1])
@@ -610,67 +610,68 @@ def main() -> None:
             st.info("🆕 目前股票池中沒有上市未滿半年的公司。")
 
     # ── Fundamental screen (optional, slow) ──
-    if cfg["use_fundamentals"] and results:
-        st.info(f"執行基本面篩選中（{len(results)} 支股票，每支需額外 API 請求，請耐心等候）…")
-        prog3 = st.progress(0.0)
-        filtered: list[dict] = []
-        for i, row in enumerate(results):
-            prog3.progress((i + 1) / len(results))
-            fund = check_fundamentals(
-                row["Ticker"],
-                min_eps_growth=cfg["min_eps_growth"],
-                min_rev_growth=cfg["min_rev_growth"],
-            )
-            if fund["pass"]:
-                row["季EPS年增%"] = fund["eps_growth"]
-                row["年營收增%"] = fund["rev_growth"]
-                row["利潤率上升"] = "✓" if fund["margin_rising"] else "✗"
-                row["ROE%"] = fund["roe"]
-                filtered.append(row)
-            time.sleep(0.25)
-        prog3.progress(1.0)
-        results = filtered
+    if cfg["use_sepa"] or cfg["use_fundamentals"]:
+        if cfg["use_fundamentals"] and results:
+            st.info(f"執行基本面篩選中（{len(results)} 支股票，每支需額外 API 請求，請耐心等候）…")
+            prog3 = st.progress(0.0)
+            filtered: list[dict] = []
+            for i, row in enumerate(results):
+                prog3.progress((i + 1) / len(results))
+                fund = check_fundamentals(
+                    row["Ticker"],
+                    min_eps_growth=cfg["min_eps_growth"],
+                    min_rev_growth=cfg["min_rev_growth"],
+                )
+                if fund["pass"]:
+                    row["季EPS年增%"] = fund["eps_growth"]
+                    row["年營收增%"] = fund["rev_growth"]
+                    row["利潤率上升"] = "✓" if fund["margin_rising"] else "✗"
+                    row["ROE%"] = fund["roe"]
+                    filtered.append(row)
+                time.sleep(0.25)
+            prog3.progress(1.0)
+            results = filtered
 
-    # ── Results ───────────────────────────────
-    st.success(f"掃描完成！找到 **{len(results)}** 支符合條件的股票（共掃描 {total} 支）")
+        # ── Results ───────────────────────────────
+        st.success(f"掃描完成！找到 **{len(results)}** 支符合條件的股票（共掃描 {total} 支）")
 
-    if not results:
-        st.warning("沒有找到符合條件的股票，請嘗試放寬篩選條件（例如降低 SEPA 最低項數或 RS 門檻）。")
-        return
+        if not results:
+            st.warning("沒有找到符合條件的股票，請嘗試放寬篩選條件（例如降低 SEPA 最低項數或 RS 門檻）。")
+            return
 
-    # Build display dataframe (drop internal columns, rename display keys)
-    _internal = {"_daily_gain"}
-    _rename = {"距高點pct": "距52週高%"}
-    display_rows = [
-        {_rename.get(k, k): v for k, v in r.items() if k not in _internal}
-        for r in results
-    ]
-    df_result = pd.DataFrame(display_rows)
+        # Build display dataframe (drop internal columns, rename display keys)
+        _internal = {"_daily_gain"}
+        _rename = {"距高點pct": "距52週高%"}
+        display_rows = [
+            {_rename.get(k, k): v for k, v in r.items() if k not in _internal}
+            for r in results
+        ]
+        df_result = pd.DataFrame(display_rows)
 
-    if "RS評分" in df_result.columns:
-        df_result = df_result.sort_values("RS評分", ascending=False)
+        if "RS評分" in df_result.columns:
+            df_result = df_result.sort_values("RS評分", ascending=False)
 
-    st.dataframe(df_result, use_container_width=True, hide_index=True)
+        st.dataframe(df_result, use_container_width=True, hide_index=True)
 
-    # Download CSV
-    ts = datetime.now().strftime("%Y%m%d_%H%M")
-    st.download_button(
-        "⬇️ 下載結果 CSV",
-        df_result.to_csv(index=False),
-        f"sepa_{ts}.csv",
-        "text/csv",
-    )
+        # Download CSV
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        st.download_button(
+            "⬇️ 下載結果 CSV",
+            df_result.to_csv(index=False),
+            f"sepa_{ts}.csv",
+            "text/csv",
+        )
 
-    # ── Detail chart ─────────────────────────
-    st.divider()
-    st.subheader("📊 個股詳細圖表")
+        # ── Detail chart ─────────────────────────
+        st.divider()
+        st.subheader("📊 個股詳細圖表")
 
-    ticker_list = df_result["Ticker"].tolist()
-    selected = st.selectbox("選擇股票", ticker_list)
+        ticker_list = df_result["Ticker"].tolist()
+        selected = st.selectbox("選擇股票", ticker_list)
 
-    if selected and selected in all_data:
-        rs_val = rs_ratings.get(selected)
-        show_chart(all_data[selected], selected, rs_val)
+        if selected and selected in all_data:
+            rs_val = rs_ratings.get(selected)
+            show_chart(all_data[selected], selected, rs_val)
 
 
 if __name__ == "__main__":
