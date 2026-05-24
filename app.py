@@ -72,7 +72,10 @@ def _extract_ticker(raw, ticker: str, n_tickers: int) -> pd.DataFrame | None:
                 df = raw.droplevel(1, axis=1).copy()
 
         df = df.dropna(subset=["Close"])
-        return df if len(df) >= 110 else None
+        # 門檻降至 1 列，讓剛上市的新股也能進入 all_data。
+        # SEPA 要求 210 列（check_sepa 內部自行把關），RS 要求 63 列（compute_rs_ratings 自行把關），
+        # 此處只需確保至少有一筆收盤價即可。
+        return df if len(df) >= 1 else None
     except Exception:
         return None
 
@@ -460,7 +463,23 @@ def main() -> None:
             current_price = float(close.iloc[-1])
             avg_volume = float(df["Volume"].tail(50).mean())
 
-            # ── 基本篩選（股價 & 成交量）──
+            # ── 上市未滿半年（無股價/成交量門檻，必須在基本篩選 continue 之前執行）──
+            # 新股資料列數少、成交量/股價可能不達門檻，因此獨立判斷，不受後續 continue 影響。
+            if cfg["use_new_listing"]:
+                first_date = df.index[0]
+                last_date = df.index[-1]
+                cutoff = last_date - pd.Timedelta(days=180)
+                if first_date >= cutoff:
+                    days_listed = (last_date - first_date).days
+                    new_listing_results.append({
+                        "Ticker": ticker,
+                        "現價": round(current_price, 2),
+                        "上市日期": first_date.strftime("%Y-%m-%d"),
+                        "上市天數": days_listed,
+                        "日均量萬股": round(avg_volume / 10000, 1),
+                    })
+
+            # ── 基本篩選（股價 & 成交量）── 僅適用於 SEPA 及 52 週高低點篩選
             if current_price < cfg["min_price"] or avg_volume < cfg["min_avg_volume"]:
                 continue
 
@@ -520,21 +539,6 @@ def main() -> None:
                         "前日收盤": round(prev_close_low, 2),
                         "52週最低": round(low_52w_prev, 2),
                         "距低點%": gap_pct_low,
-                    })
-
-            # ── 上市未滿半年（市況觀察，獨立於其他篩選）──
-            if cfg["use_new_listing"]:
-                first_date = df.index[0]
-                last_date = df.index[-1]
-                cutoff = last_date - pd.Timedelta(days=180)
-                if first_date >= cutoff:
-                    days_listed = (last_date - first_date).days
-                    new_listing_results.append({
-                        "Ticker": ticker,
-                        "現價": round(current_price, 2),
-                        "上市日期": first_date.strftime("%Y-%m-%d"),
-                        "上市天數": days_listed,
-                        "日均量萬股": round(avg_volume / 10000, 1),
                     })
 
             if sepa_ok and (cfg["use_sepa"] or cfg["use_fundamentals"]):
